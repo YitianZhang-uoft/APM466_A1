@@ -1,0 +1,190 @@
+import pandas as pd
+import numpy as np
+import os
+import matplotlib.pyplot as plt
+import scipy.optimize as optimize
+from datetime import datetime
+
+class Bond(object):
+    def __init__(self, _coupon, _maturity_date, _close_price):
+        self.coupon = float(_coupon.split('%')[0])
+        self.maturity_date = _maturity_date
+        self.close_price = list(reversed(_close_price))
+        self.time_to_maturity = self.time_to_maturity()
+        self.yield_to_maturity = self.ytm_list()
+        self.ytm_average = sum(self.yield_to_maturity) / 10
+
+    def time_to_maturity(self):
+        y = datetime.strptime('01/02/2020', '%m/%d/%Y')
+        z = datetime.strptime(self.maturity_date, '%m/%d/%Y')
+        diff = z - y
+        return diff.days
+
+    def yield_to_maturity(self, n, _close_price):
+        tmp1 = int(self.time_to_maturity - n)
+        time = np.asarray([2 * (tmp1 % 182) / 365 + n for n in range(0, int(tmp1 / 182) + 1)])
+        coupon = self.coupon / 2
+        dirty_price = float(_close_price) + coupon * ((182 - tmp1 % 182) / 365)
+        ytm_func = lambda y: np.dot(np.asarray([coupon] * int(tmp1 / 182) + [coupon + 100]), (1 + y / 2) ** (-time)) - dirty_price
+        result = optimize.fsolve(ytm_func, 0.03)
+        return result
+
+    def ytm_list(self):
+        ret = []
+        for i in range(10):
+            ret.append(self.yield_to_maturity(i, self.close_price[i]))
+        return ret
+
+def yield_to_maturity(DataFrame):
+    list1, list2 = list(), list()
+    for index, bond in DataFrame.iterrows():
+        tmp1 = bond['time to maturity']
+        time = np.asarray([2 * (tmp1 % 182) / 365 + n for n in range(0, int(tmp1 / 182) + 1)])
+        coupon = float(bond['Coupon'].split('%')[0]) * 100 / 2
+        dirty_price = bond['Close_price'] + coupon * ((182 - tmp1 % 182) / 365)
+        function = lambda y: np.dot(np.asarray([coupon] * int(tmp1 / 182) + [coupon + 100]), (1 + y / 2) ** (-time)) - dirty_price
+        list1.append(bond['time to maturity'] / 365)
+        list2.append(optimize.fsolve(function, 0.05))
+    return list1, list2
+
+def date_distance(df):
+    current_date = df['Date'][0]
+    df['time to maturity'] = [(datetime.strptime(maturity, '%m/%d/%Y') - datetime.strptime(current_date, '%m/%d/%Y')).days for maturity in df['Maturity_date']]
+
+
+def Spot(DataFrame):
+    spot_result = np.zeros([1,10])
+    time, coupons, dirty_price = list(), list(), list()
+    for index, bond in DataFrame.iterrows():
+        coupon = float(bond['Coupon'].split('%')[0]) * 50
+        dirty_price.append(bond['Close_price'] + coupon * (0.5 - (bond['time to maturity'] % 182) / 365))
+        coupons.append(coupon)
+        time.append(bond['time to maturity'] / 365)
+    spot_result[0, 0] =-np.log(dirty_price[0] / (coupons[0] + 100)) / time[0]
+    for i in range(1, 10):
+        function = lambda y: np.dot(np.asarray([coupons[i]] * i + [coupons[i] + 100])[:-1],
+                                     np.exp(-(np.multiply(spot_result[0, :i], time[:i])))) + np.asarray([coupons[i]] * i + [coupons[i] + 100])[i] * np.exp(-y * time[i]) - dirty_price[i]
+        spot_result[0, i] = optimize.fsolve(function, 0.1)
+    return time, spot_result
+
+def forward_curve(DataFrame):
+    result = []
+    s = Spot(DataFrame)[1].squeeze()
+    for i in range(1,5):
+        result.append((s[2*i+1]*(i+1)-s[1])/i)
+    return result
+
+
+folder_path = os.getcwd()
+
+file_path = os.path.join(folder_path, '10bonds.csv')
+
+data = pd.read_csv(file_path)
+
+days = ['2020/01/02', '2020/01/03', '2020/01/06', '2020/01/07', '2020/01/08',
+        '2020/01/09', '2020/01/10', '2020/01/13', '2020/01/14', '2020/01/15']
+
+Bond_list = []
+
+close_price = []
+
+df = []
+
+for index, row in data.iterrows():
+    close_price.append(row['Close_price'])
+    if index % 10 == 9:
+        coupon = row['Coupon']
+        maturity_date = row['Maturity_date']
+        Bond_list.append(Bond(coupon, maturity_date, close_price))
+        close_price = []
+
+for i in range(10):
+    p = [10 * j + i for j in range(10)]
+    tmp = data.iloc[p]
+    tmp = tmp.reset_index(drop=True)
+    print(tmp)
+    df.append(tmp)
+
+for i in range(10):
+    print("Bond {}'s ytm is {:.4f}".format(i, Bond_list[i].ytm_average[0]))
+
+plt.figure()
+
+plt.xlabel('Time To Maturity');plt.ylabel('Yield');plt.title('5-year yield curve')
+
+for i in range(1, 10):
+    x = [(Bond_list[j].time_to_maturity - i) / 365 for j in range(10)]
+    y = [Bond_list[j].yield_to_maturity[i] + 0.0005 * i for j in range(10)]
+    print(y)
+    plt.plot(x, y, label=days[i])
+    
+plt.legend()
+
+plt.savefig('YTM.png')
+
+plt.show()
+
+plt.xlabel('Time To Maturity');plt.ylabel('Spot Rate');plt.title('5-year Spot Curve')
+
+for i in range(len(df)):
+    d = df[i]
+    date_distance(d)
+    x = Spot(d)[0]
+    y = Spot(d)[1].squeeze() / 365
+    y = y + i*0.005
+    plt.plot(x, y, label=days[i])
+    
+plt.legend()
+
+plt.savefig('SPOTRATE.png')
+
+plt.show()
+
+plt.xlabel('year to year');plt.ylabel('forward rate');plt.title('1-year forward curve')
+
+for i in range(len(df)):
+    d = df[i]
+    date_distance(d)
+    tmp = forward_curve(d)
+    plt.plot(['1year-1year', '1year-2year', '1year-3year', '1year-4year'], tmp, label=days[i])
+    
+plt.legend()
+
+plt.savefig('FORWARD.png')
+
+plt.show()
+
+y = np.zeros([5, 10])
+
+for i in range(len(df)):
+    tmp = df[i]
+    date_distance(tmp)
+    for j in range(5):
+        y[j, i] = yield_to_maturity(tmp)[1][2*j+1]
+
+log = np.zeros([5, 9])
+
+for i in range(0, 9):
+    for j in range(5):
+        log[j, i] = np.log(y[j, i+1]/y[j, i])
+
+
+cov1 = np.cov(log)
+print("covariance of YTM is {}".format(cov1))
+
+forward_yield = np.empty([4, 10])
+for i in range(len(df)):
+    for j in range(4):
+        forward_yield[j, i] = forward_curve(df[i])[j]
+
+cov2 = np.cov(forward_yield)
+
+print("covariance of forward rate is {}".format(cov2))
+
+a, b = np.linalg.eig(np.cov(log))
+
+print("YTM eigenvalue is {}\n{}".format(a,b))
+
+c, d = np.linalg.eig(np.cov(forward_yield))
+
+print("forward rate eigenvalue is {}\n{}".format(c, d))
